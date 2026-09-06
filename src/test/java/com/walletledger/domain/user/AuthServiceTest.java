@@ -1,5 +1,6 @@
 package com.walletledger.domain.user;
 
+import com.walletledger.domain.account.AccountRepository;
 import com.walletledger.domain.user.dto.LoginRequest;
 import com.walletledger.domain.user.dto.RegisterRequest;
 import com.walletledger.domain.user.dto.UserResponse;
@@ -36,6 +37,9 @@ class AuthServiceTest {
     private UserRepository userRepository;
 
     @Mock
+    private AccountRepository accountRepository;
+
+    @Mock
     private PasswordEncoder passwordEncoder;
 
     @Mock
@@ -64,6 +68,7 @@ class AuthServiceTest {
         assertThat(saved.getPasswordHash()).isEqualTo("hashed-password");
         assertThat(saved.getRole()).isEqualTo(UserRole.CUSTOMER);
         assertThat(saved.getStatus()).isEqualTo(UserStatus.ACTIVE);
+        verify(accountRepository).save(any());
     }
 
     @Test

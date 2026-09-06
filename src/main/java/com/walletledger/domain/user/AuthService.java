@@ -1,5 +1,8 @@
 package com.walletledger.domain.user;
 
+import com.walletledger.domain.account.Account;
+import com.walletledger.domain.account.AccountRepository;
+import com.walletledger.domain.account.AccountType;
 import com.walletledger.domain.user.dto.LoginRequest;
 import com.walletledger.domain.user.dto.LoginResponse;
 import com.walletledger.domain.user.dto.RegisterRequest;
@@ -18,7 +21,10 @@ import org.springframework.web.server.ResponseStatusException;
 @RequiredArgsConstructor
 public class AuthService {
 
+    private static final String CURRENCY = "COINS";
+
     private final UserRepository userRepository;
+    private final AccountRepository accountRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final UserMapper userMapper;
@@ -37,6 +43,15 @@ public class AuthService {
         } catch (DataIntegrityViolationException e) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Username already taken");
         }
+
+        Account account = Account.builder()
+                .ownerId(user.getId())
+                .type(AccountType.PLAYER)
+                .currency(CURRENCY)
+                .balance(0)
+                .held(0)
+                .build();
+        accountRepository.save(account);
 
         return userMapper.toResponse(user);
     }

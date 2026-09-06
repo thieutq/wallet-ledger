@@ -66,7 +66,7 @@ CREATE INDEX outbox_events_pending_idx ON outbox_events(created_at) WHERE status
   - `hold`/`capture`/`void` — same pattern on `held`; `capture` creates `Transfer(type=HOLD_CAPTURE)`
   - Publishes an outbox event inside the same transaction
 - `LedgerController` — `POST /ledger/{credit,debit,hold,capture,void}`, `ROLE_SERVICE`, requires `Idempotency-Key`
-- `PlayerController` — `GET /players/me/balance`, `GET /players/me/transactions` (paginated), `ROLE_USER`
+- `PlayerController` — `GET /players/me/balance`, `GET /players/me/transactions` (paginated), `ROLE_CUSTOMER` (the JWT `role` claim is a `UserRole`, not a separate "USER" role)
 - `OutboxEventScheduler` — polls `PENDING`→`PROCESSED` (stub, no real consumer yet)
 - `HoldExpiryScheduler` — polls active holds past `expires_at` → `expired`, releases `held` (closes a gap: the column/index existed with no code acting on them)
 
