@@ -31,7 +31,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -53,6 +59,7 @@ class LedgerIT extends AbstractIntegrationTest {
     @Autowired private HoldRepository holdRepository;
     @Autowired private OutboxEventRepository outboxEventRepository;
     @Autowired private JwtService jwtService;
+    @Autowired private DataSource dataSource;
 
     private Account newPlayerAccount(long initialBalance) {
         User user = userRepository.save(User.builder()
@@ -331,6 +338,37 @@ class LedgerIT extends AbstractIntegrationTest {
         Account reloadedAccount = accountRepository.findById(account.getId()).orElseThrow();
         assertThat(reloadedAccount.getHeld()).isEqualTo(0);
         assertThat(reloadedAccount.getBalance()).isEqualTo(100);
+    }
+
+    // ---- P2.5-I1/I2: DB-level backstop for the double-entry invariant ----
+
+    @Test
+    void insertingAnUnbalancingEntryDirectlyFailsAtCommitViaTheDbTrigger() throws Exception {
+        // A real, balanced transfer via the normal path (regression guard:
+        // the trigger must not false-positive on the correct path — P2.5-I2).
+        Account account = newPlayerAccount(0);
+        postLedger("/api/v1/ledger/credit", creditBody(account.getId(), 50), UUID.randomUUID().toString())
+                .andExpect(status().isCreated());
+        Transfer transfer = transferRepository.findAll().stream()
+                .filter(t -> t.getToAccountId().equals(account.getId()))
+                .findFirst().orElseThrow();
+
+        // Bypass LedgerService entirely: insert one more entry against that
+        // same transfer, deliberately unbalancing it, in its own transaction.
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try (PreparedStatement ps = connection.prepareStatement(
+                    "INSERT INTO entries (id, transfer_id, account_id, amount) VALUES (?, ?, ?, ?)")) {
+                ps.setString(1, UUID.randomUUID().toString());
+                ps.setString(2, transfer.getId());
+                ps.setString(3, account.getId());
+                ps.setLong(4, 999);
+                ps.executeUpdate();
+            }
+            // The deferred constraint trigger only fires at COMMIT — the
+            // INSERT itself succeeds, the transaction as a whole does not.
+            assertThatThrownBy(connection::commit).isInstanceOf(SQLException.class);
+        }
     }
 
     // ---- helpers ---------------------------------------------------------
