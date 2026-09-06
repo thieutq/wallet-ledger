@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    paths:
+      - "pom.xml"
+      - "mvnw"
+      - "mvnw.cmd"
+      - "src/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "pom.xml"
+      - "mvnw"
+      - "mvnw.cmd"
+      - "src/**"
+      - ".github/workflows/ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      # Surefire: *Test.java only. Fails fast before paying for the slower,
+      # Testcontainers-backed integration suite below.
+      - name: Run unit tests
+        run: ./mvnw -B test
+
+      # Failsafe: *IT.java only. Needs Docker for Testcontainers (Postgres) —
+      # already available on the ubuntu-latest runner, no extra service setup.
+      - name: Run integration tests
+        run: ./mvnw -B failsafe:integration-test failsafe:verify
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            target/surefire-reports/**
+            target/failsafe-reports/**
+          if-no-files-found: ignore

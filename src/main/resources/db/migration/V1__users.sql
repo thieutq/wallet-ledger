@@ -1,0 +1,10 @@
+CREATE TABLE users (
+    id VARCHAR(50) PRIMARY KEY,
+    username VARCHAR(50) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    role VARCHAR(20) DEFAULT 'CUSTOMER' NOT NULL,
+    status VARCHAR(20) DEFAULT 'ACTIVE' NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT users_role_valid   CHECK (role IN ('CUSTOMER', 'ADMIN', 'AUDITOR')),
+    CONSTRAINT users_status_valid CHECK (status IN ('ACTIVE', 'SUSPENDED'))
+);

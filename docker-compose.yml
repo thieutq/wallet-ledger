@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: wallet_ledger
+      POSTGRES_USER: wallet_ledger
+      POSTGRES_PASSWORD: wallet_ledger
+    ports:
+      - "5432:5432"
+    volumes:
+      - wallet_ledger_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wallet_ledger"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/wallet_ledger
+      DB_USERNAME: wallet_ledger
+      DB_PASSWORD: wallet_ledger
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-please-32-bytes-minimum}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  wallet_ledger_pgdata:
