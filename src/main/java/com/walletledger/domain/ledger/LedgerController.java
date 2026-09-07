@@ -5,6 +5,7 @@ import com.walletledger.domain.ledger.dto.DebitRequest;
 import com.walletledger.domain.ledger.dto.HoldIdRequest;
 import com.walletledger.domain.ledger.dto.HoldRequest;
 import com.walletledger.domain.ledger.dto.HoldResponse;
+import com.walletledger.domain.ledger.dto.RefundRequest;
 import com.walletledger.domain.ledger.dto.TransferResponse;
 import com.walletledger.domain.ledger.mapper.LedgerMapper;
 import com.walletledger.shared.response.ApiResponse;
@@ -78,6 +79,16 @@ public class LedgerController {
     public ResponseEntity<ApiResponse<HoldResponse>> voidHold(@Valid @RequestBody HoldIdRequest request) {
         Hold hold = ledgerService.voidHold(request.holdId());
         return ResponseEntity.ok(ApiResponse.success(HttpStatus.OK.value(), ledgerMapper.toResponse(hold)));
+    }
+
+    @Operation(summary = "Refund a completed transfer, fully or partially")
+    @PostMapping("/refund")
+    public ResponseEntity<ApiResponse<TransferResponse>> refund(
+            @RequestHeader(IDEMPOTENCY_KEY_HEADER) @NotBlank String idempotencyKey,
+            @Valid @RequestBody RefundRequest request) {
+        Transfer transfer = ledgerService.refund(new RefundCommand(
+                request.originalTransferId(), request.amount(), request.metadata(), idempotencyKey));
+        return created(transfer);
     }
 
     private ResponseEntity<ApiResponse<TransferResponse>> created(Transfer transfer) {

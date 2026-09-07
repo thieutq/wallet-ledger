@@ -371,6 +371,97 @@ class LedgerIT extends AbstractIntegrationTest {
         }
     }
 
+    // ---- P4-I1/I2/I3/I4/I5/I6: refund -------------------------------------
+
+    @Test
+    void fullRefundRestoresBothBalancesAndCreatesOneRefundTransfer() throws Exception {
+        Account account = newPlayerAccount(100);
+        long systemBalanceBeforePurchase = accountRepository.findById(systemAccountId()).orElseThrow().getBalance();
+        String purchaseId = debit(account.getId(), 100);
+
+        postLedger("/api/v1/ledger/refund", refundBody(purchaseId, null), UUID.randomUUID().toString())
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.type").value("REFUND"))
+                .andExpect(jsonPath("$.data.amount").value(100));
+
+        assertThat(accountRepository.findById(account.getId()).orElseThrow().getBalance()).isEqualTo(100);
+        assertThat(accountRepository.findById(systemAccountId()).orElseThrow().getBalance()).isEqualTo(systemBalanceBeforePurchase);
+
+        long refundCount = transferRepository.findAll().stream()
+                .filter(t -> t.getType() == TransferType.REFUND && purchaseId.equals(t.getReferenceId()))
+                .count();
+        assertThat(refundCount).isEqualTo(1);
+    }
+
+    @Test
+    void twoPartialRefundsSumCorrectlyAndSecondCallComputesRemaining() throws Exception {
+        Account account = newPlayerAccount(100);
+        String purchaseId = debit(account.getId(), 100);
+
+        postLedger("/api/v1/ledger/refund", refundBody(purchaseId, 40L), UUID.randomUUID().toString())
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.amount").value(40));
+
+        postLedger("/api/v1/ledger/refund", refundBody(purchaseId, 60L), UUID.randomUUID().toString())
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.amount").value(60));
+
+        assertThat(accountRepository.findById(account.getId()).orElseThrow().getBalance()).isEqualTo(100);
+    }
+
+    @Test
+    void overRefundExceedingRemainingReturns409AndLeavesStateUnchanged() throws Exception {
+        Account account = newPlayerAccount(100);
+        String purchaseId = debit(account.getId(), 100);
+
+        postLedger("/api/v1/ledger/refund", refundBody(purchaseId, 40L), UUID.randomUUID().toString())
+                .andExpect(status().isCreated());
+
+        postLedger("/api/v1/ledger/refund", refundBody(purchaseId, 70L), UUID.randomUUID().toString())
+                .andExpect(status().isConflict());
+
+        // 100 debited, 40 refunded back -> balance is 40, not the 60 still refundable
+        assertThat(accountRepository.findById(account.getId()).orElseThrow().getBalance()).isEqualTo(40);
+    }
+
+    @Test
+    void refundingARefundReturns409() throws Exception {
+        Account account = newPlayerAccount(100);
+        String purchaseId = debit(account.getId(), 100);
+
+        MvcResult refundResult = postLedger("/api/v1/ledger/refund", refundBody(purchaseId, null), UUID.randomUUID().toString())
+                .andExpect(status().isCreated())
+                .andReturn();
+        String refundId = objectMapper.readTree(refundResult.getResponse().getContentAsString()).path("data").path("id").asText();
+
+        postLedger("/api/v1/ledger/refund", refundBody(refundId, null), UUID.randomUUID().toString())
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void refundingANonexistentTransferReturns404() throws Exception {
+        postLedger("/api/v1/ledger/refund", refundBody(UUID.randomUUID().toString(), null), UUID.randomUUID().toString())
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void repeatedRefundRequestWithSameIdempotencyKeyAppliesOnce() throws Exception {
+        Account account = newPlayerAccount(100);
+        String purchaseId = debit(account.getId(), 100);
+        String idempotencyKey = UUID.randomUUID().toString();
+
+        postLedger("/api/v1/ledger/refund", refundBody(purchaseId, null), idempotencyKey)
+                .andExpect(status().isCreated());
+        postLedger("/api/v1/ledger/refund", refundBody(purchaseId, null), idempotencyKey)
+                .andExpect(status().isCreated());
+
+        assertThat(accountRepository.findById(account.getId()).orElseThrow().getBalance()).isEqualTo(100);
+        long refundCount = transferRepository.findAll().stream()
+                .filter(t -> t.getType() == TransferType.REFUND && purchaseId.equals(t.getReferenceId()))
+                .count();
+        assertThat(refundCount).isEqualTo(1);
+    }
+
     // ---- helpers ---------------------------------------------------------
 
     private String systemAccountId() {
@@ -379,6 +470,13 @@ class LedgerIT extends AbstractIntegrationTest {
 
     private String createHold(String accountId, long amount) throws Exception {
         MvcResult result = postLedger("/api/v1/ledger/hold", holdBody(accountId, amount), UUID.randomUUID().toString())
+                .andExpect(status().isCreated())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString()).path("data").path("id").asText();
+    }
+
+    private String debit(String accountId, long amount) throws Exception {
+        MvcResult result = postLedger("/api/v1/ledger/debit", debitBody(accountId, amount), UUID.randomUUID().toString())
                 .andExpect(status().isCreated())
                 .andReturn();
         return objectMapper.readTree(result.getResponse().getContentAsString()).path("data").path("id").asText();
@@ -394,6 +492,15 @@ class LedgerIT extends AbstractIntegrationTest {
 
     private Map<String, Object> holdBody(String accountId, long amount) {
         return Map.of("account_id", accountId, "amount", amount, "type", "PURCHASE");
+    }
+
+    private Map<String, Object> refundBody(String originalTransferId, Long amount) {
+        Map<String, Object> body = new java.util.HashMap<>();
+        body.put("original_transfer_id", originalTransferId);
+        if (amount != null) {
+            body.put("amount", amount);
+        }
+        return body;
     }
 
     private org.springframework.test.web.servlet.ResultActions postLedger(String path, Map<String, ?> body, String idempotencyKey) throws Exception {

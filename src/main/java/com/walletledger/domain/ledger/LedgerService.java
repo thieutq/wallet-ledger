@@ -76,6 +76,11 @@ public class LedgerService {
         return transactionTemplate.execute(status -> doVoid(holdId));
     }
 
+    public Transfer refund(RefundCommand cmd) {
+        return transferRepository.findByIdempotencyKey(cmd.idempotencyKey())
+                .orElseGet(() -> runIdempotent(cmd.idempotencyKey(), () -> doRefund(cmd)));
+    }
+
     // ---- credit / debit ------------------------------------------------
 
     private Transfer doCredit(TransferCommand cmd) {
@@ -260,6 +265,63 @@ public class LedgerService {
 
         hold.setStatus(HoldStatus.VOIDED);
         return holdRepository.save(hold);
+    }
+
+    // ---- refund ----------------------------------------------------------
+
+    private Transfer doRefund(RefundCommand cmd) {
+        Transfer original = transferRepository.findById(cmd.originalTransferId())
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Transfer not found: " + cmd.originalTransferId()));
+
+        if (original.getType() == TransferType.REFUND) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Cannot refund a REFUND transfer");
+        }
+        if (original.getStatus() != TransferStatus.COMPLETED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Original transfer is not COMPLETED: " + original.getStatus());
+        }
+
+        long alreadyRefunded = transferRepository.sumAmountByTypeAndReferenceId(original.getId(), TransferType.REFUND);
+        long remaining = original.getAmount() - alreadyRefunded;
+        long amount = cmd.amount() != null ? cmd.amount() : remaining;
+
+        if (amount <= 0 || amount > remaining) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Invalid refund amount: requested=" + amount + ", remaining=" + remaining);
+        }
+
+        Map<String, Account> accounts = lockAccounts(original.getFromAccountId(), original.getToAccountId());
+        Account from = accounts.get(original.getToAccountId());
+        Account to = accounts.get(original.getFromAccountId());
+
+        if (from.getType() != AccountType.SYSTEM && from.available() < amount) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Insufficient balance to refund");
+        }
+
+        from.setBalance(from.getBalance() - amount);
+        to.setBalance(to.getBalance() + amount);
+
+        Transfer refund = Transfer.builder()
+                .idempotencyKey(cmd.idempotencyKey())
+                .fromAccountId(from.getId())
+                .toAccountId(to.getId())
+                .amount(amount)
+                .currency(original.getCurrency())
+                .status(TransferStatus.COMPLETED)
+                .type(TransferType.REFUND)
+                .referenceId(original.getId())
+                .metadata(cmd.metadata())
+                .build();
+
+        persistTransfer(refund, from, to, amount);
+
+        outboxEventPublisher.publish("REFUND_COMPLETED", Map.of(
+                "transferId", refund.getId(),
+                "originalTransferId", original.getId(),
+                "amount", amount
+        ));
+
+        return refund;
     }
 
     // ---- shared helpers --------------------------------------------------
