@@ -33,15 +33,20 @@ jobs:
           java-version: "17"
           cache: maven
 
-      # Surefire: *Test.java only. Fails fast before paying for the slower,
-      # Testcontainers-backed integration suite below.
       - name: Run unit tests
         run: ./mvnw -B test
 
-      # Failsafe: *IT.java only. Needs Docker for Testcontainers (Postgres) —
-      # already available on the ubuntu-latest runner, no extra service setup.
       - name: Run integration tests
+        env:
+          MAVEN_OPTS: -XX:MaxRAMPercentage=50
         run: ./mvnw -B failsafe:integration-test failsafe:verify
+
+      - name: Dump Docker state on failure
+        if: failure()
+        run: |
+          docker ps -a
+          docker inspect $(docker ps -aq --filter ancestor=postgres:15-alpine) || true
+          docker logs $(docker ps -aq --filter ancestor=postgres:15-alpine) || true
 
       - name: Upload test reports
         if: always()

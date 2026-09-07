@@ -27,7 +27,13 @@ docker-compose up -d postgres   # just the database
 ./mvnw test                                        # unit tests only (fast, no Docker needed)
 ./mvnw failsafe:integration-test failsafe:verify    # integration tests (needs Docker, for Testcontainers)
 ```
-See [Testing approach](#testing-approach) below for what each tier covers.
+
+If Testcontainers can't reach Docker on your machine, point the integration tests at a Postgres
+```bash
+docker compose -f docker-compose.test.yml up -d
+IT_DB_URL=jdbc:postgresql://localhost:5433/wallet_ledger_test ./mvnw failsafe:integration-test failsafe:verify
+docker compose -f docker-compose.test.yml down
+```
 
 ### Try it
 A `root` / `123456` admin account is seeded automatically on first startup (see [Assumptions & limitations](#assumptions--limitations) — change this before any real deployment).
