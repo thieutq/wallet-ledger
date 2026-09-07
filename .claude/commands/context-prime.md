@@ -1,0 +1,1 @@
+Read `CLAUDE.md` and `docs/architecture.md`, then run `git log --oneline -10` and `git status` to understand the current state of the project. If deeper context on a specific design choice is needed, `docs/04-design-decisions.md` and `docs/README.md` (the full docs index) are the next places to look.

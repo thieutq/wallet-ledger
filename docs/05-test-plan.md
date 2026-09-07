@@ -15,6 +15,7 @@ Granular, per-phase test cases (IDs, Given/When/Then, traced back to the require
 | BF-Refund | Transaction Refund |
 | BF-DomainEvents | Domain Events (transactional outbox) |
 | BF-Transfer | Peer-to-peer Transfer (direct player-to-player movement) |
+| SC5 | Stored balance never drifts from ledger history, independent of the entries-only DB trigger |
 | Infra | Supports the above but isn't itself a customer-facing capability (auth plumbing, seeding, tooling) |
 
 Test type: **Unit** = `*Test.java`, Surefire, no Spring context/DB, Mockito. **Integration** = `*IT.java`, Failsafe, full Spring context + Testcontainers Postgres.
@@ -153,3 +154,15 @@ Not test cases — see the **Release checklist** already in [03-implementation-p
 | P6-I3 | account A | `POST /ledger/transfer` A→A (same account) | `400`, no state change | SC4 |
 | P6-I4 | account A, the `SYSTEM` account | `POST /ledger/transfer` involving the `SYSTEM` account on either side | `400`, no state change | SC4 |
 | P6-I5 | — | the same transfer request fired twice with the same `Idempotency-Key` | single transfer applied, not double-moved | SC1 |
+
+---
+
+## Phase 7 — Reconciliation
+
+| ID | Given | When | Then | Req |
+|---|---|---|---|---|
+| P7-I1 | 3 accounts, a mix of credit/transfer/debit/hold+capture/refund | `ReconciliationService.run()` | `isHealthy()` true — global entries sum=0, no drifted accounts | SC5 |
+| P7-I2 | 2 accounts, 20 concurrent transfers between them | `ReconciliationService.run()` after all complete | still healthy — invariant holds under real concurrency, not just sequential ops | SC5, SC2 |
+| P7-I3 | an account credited normally, then `accounts.balance` corrupted via raw JDBC (bypassing `LedgerService`, `entries` untouched) | `ReconciliationService.run()` | `isHealthy()` false; the corrupted account appears in `driftedAccounts()` with the correct stored-vs-ledger mismatch — proves this catches what the Phase 2.5 trigger structurally can't | SC5 |
+| P7-I4 | a `CUSTOMER` JWT | `GET /admin/reconciliation` | `403` | SC4 |
+| P7-I5 | an `ADMIN` JWT | `GET /admin/reconciliation` | `200`, healthy report | Infra |

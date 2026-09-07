@@ -42,6 +42,7 @@ Both endpoints require a body of:
 
 ## Admin / Auditor (user management, audit)
 
+- `GET /api/v1/admin/reconciliation` — **implemented** (the rest of this section is still aspirational). `ROLE_ADMIN`. Independently re-verifies the ledger on demand: entries sum to zero system-wide, and every account's stored `balance` agrees with what its own entries sum to. Returns `{ healthy, global_entries_sum, drifted_accounts[] }`. Same check `ReconciliationScheduler` already runs hourly in the background — this is the on-demand version, useful during an incident instead of waiting for the next tick.
 - `GET /api/v1/admin/users` — lists users, filterable by role/status (paginated).
 - `PATCH /api/v1/admin/users/{id}/status` — suspends or activates a user.
 - `GET /api/v1/admin/audit-logs?target_type=&target_id=` — looks up admin action audit logs (paginated). Backed by the `audit_logs` table for non-balance admin actions (e.g. user suspension); balance-changing actions are already recorded on `transfers`/`holds` via `type`/`reference_id`/`created_by`.

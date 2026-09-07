@@ -84,7 +84,8 @@ com.walletledger
 │   ├── ledger        # Transfer/Entry/Hold, LedgerService/Controller, dto/, mapper/
 │   ├── player        # PlayerController (balance, transaction history)
 │   ├── reward        # RewardProgram lookup (signup bonus)
-│   └── outbox        # OutboxEvent, publisher, @Scheduled poller
+│   ├── outbox        # OutboxEvent, publisher, @Scheduled poller
+│   └── reconciliation # independent ledger re-verification, scheduled + on-demand
 ├── infrastructure/security
 │   ├── jwt           # JwtService, JwtAuthenticationFilter, JwtProperties
 │   └── apikey        # ApiClient, ApiKeyAuthFilter (X-Api-Key -> ROLE_SERVICE)
@@ -121,6 +122,7 @@ com.walletledger
 | `POST` | `/api/v1/ledger/void` | Cancel a hold, releasing the reserved funds *(system/admin)* |
 | `POST` | `/api/v1/ledger/refund` | Refund a completed transfer, fully or partially *(system/admin, `Idempotency-Key`)* |
 | `POST` | `/api/v1/ledger/transfer` | Transfer funds directly between two player wallets, no `SYSTEM` account involved *(system/admin, `Idempotency-Key`)* |
+| `GET` | `/api/v1/admin/reconciliation` | Independently re-verify the ledger on demand — entries sum to zero, no account balance drift *(admin)* |
 
 ## Data Flow — Peer-to-peer Transfer
 
@@ -129,7 +131,11 @@ The most representative case: money moving between two players. Every other ledg
 ```
 POST /api/v1/ledger/transfer
 Headers: X-Api-Key: <service-key>, Idempotency-Key: k1
-Body:    { "from_account_id": "alice", "to_account_id": "bob", "amount": 250 }
+Body:    {
+           "from_account_id": "0b1e2f3a-4c5d-4e6f-8a9b-1234567890ab",  // alice's wallet
+           "to_account_id":   "1c2d3e4f-5a6b-4c7d-8e9f-0987654321ba",  // bob's wallet
+           "amount": 250
+         }
 
 Client
   │
@@ -174,9 +180,15 @@ OutboxEventScheduler (@Scheduled, every 5s)
   │
   ├── SELECT ... WHERE status='PENDING' FOR UPDATE SKIP LOCKED
   └── mark PROCESSED
-        (no real consumer wired up yet — a message bus here, e.g. Kafka,
-         is future work; see Task List)
+        │
+        ▼  ── PLANNED, not implemented yet — see Task List ──
+      Kafka
+        │
+        ▼
+  Reward / Notification / etc.
 ```
+
+`from_account_id`/`to_account_id` are `Account.id` — a server-generated UUID string (`GenerationType.UUID`), never a username or a number. A player's own wallet id isn't currently returned by `GET /players/me/balance` (only available/hold/total); today a service caller gets it from a prior `TransferResponse`'s `from_account_id`/`to_account_id`, or directly from the DB — exposing it on that endpoint is a reasonable, small follow-up if callers keep needing to look it up.
 
 See [LedgerController.java](src/main/java/com/walletledger/domain/ledger/LedgerController.java) and [LedgerService.java](src/main/java/com/walletledger/domain/ledger/LedgerService.java) for the actual code this diagram traces.
 
@@ -187,6 +199,7 @@ See [LedgerController.java](src/main/java/com/walletledger/domain/ledger/LedgerC
 - **Atomicity**: each operation (credit/debit/hold/capture/void/refund/transfer) is one transaction — accounts locked in a fixed `id`-sorted order (deadlock-free), re-checked, then mutated; if any step fails, nothing commits.
 - **Append-only entries**: no `UPDATE`/`DELETE` path on `entries`/`transfers`. Corrections happen via `POST /api/v1/ledger/refund`, which creates new offsetting entries rather than touching the original transfer.
 - **Database-level constraints**: `CHECK` constraints (non-negative balance except `SYSTEM`, `held <= balance`, valid enum values) and `UNIQUE` (idempotency keys) act as a second line of defense beyond the application-level checks.
+- **Reconciliation as a belt-and-suspenders layer**: the Phase 2.5 trigger only watches `entries`, so it can't see a direct `UPDATE accounts.balance` that never touches them. `ReconciliationService` independently recomputes every account's balance from `entries` and compares — run hourly by `ReconciliationScheduler`, and on demand via `GET /api/v1/admin/reconciliation`.
 - **Lock ordering, not lock avoidance**: accounts are always locked in a fixed `id`-sorted order, regardless of which one is logically "from" or "to" — this, not the locks themselves, is what prevents a classic deadlock (transaction A locking X then Y while B locks Y then X at the same time).
 - **`TransactionTemplate`, not `@Transactional` self-invocation**: a duplicate `Idempotency-Key` aborts the whole transaction at the DB level, so the fallback "fetch the existing row" has to run in a *fresh* transaction — self-invocation can't give you that, since Spring's proxy is bypassed on an internal method call.
 
@@ -194,35 +207,39 @@ The signup bonus reuses this same idempotency mechanism rather than a separate "
 
 ## Design decisions
 
-**Double-entry, not a mutable balance column.** Every money movement writes one `Transfer` + two signed `Entry` rows — never an in-place `UPDATE`. This makes "the audit trail disagrees with the balance" structurally impossible rather than a rule someone has to remember.
+- **Double-entry, not a mutable balance column** — `Transfer` + 2 signed `Entry` rows, never an in-place `UPDATE`; the audit trail can't disagree with the balance by construction.
+- **Balance is stored, not derived** — O(1) read on the hot balance-check path instead of `SUM(entries)` per request; drift is covered by reconciliation, not just "same transaction" discipline.
+- **`SYSTEM` accounts as the ledger's counterparty** — double-entry needs two sides even for "credit from nowhere" (a bonus) or "debit to nowhere" (a purchase).
+- **`holds` for two-phase reservations** — raises `held` without touching `balance`; `capture`/`void`/expiry settle or release it, so "reserve now, charge later" never double-spends.
+- **Refund is a reversal, never an edit** — a new offsetting `Transfer(type=REFUND)`; "already refunded" is computed on demand, not stored.
+- **Peer-to-peer transfer reuses the same machinery, not a special case** — same locking/idempotency/outbox path as `credit`/`debit`, just with both accounts supplied explicitly instead of `SYSTEM` on one side.
+- **Trade-off accepted throughout**: more inserts per operation than a single `UPDATE` — the goal is auditability and correctness under concurrency, not raw throughput.
 
-**Balance is stored, not derived.** Chosen over computing `SUM(entries)` on every read: `GET /players/me/balance` needs an O(1) read on a likely hot path. Drift risk between the stored balance and the entry history is mitigated by updating both in the same transaction (see Correctness guarantees above).
-
-**`SYSTEM` accounts as the ledger's counterparty.** Double-entry needs two sides even for "credit from nowhere" (a bonus) or "debit to nowhere" (a purchase) — a `SYSTEM` treasury account is that counterparty.
-
-**`holds` for two-phase reservations.** A hold raises `held` without touching `balance`; `capture` settles it into a real debit, `void`/expiry releases it back — so "reserve now, charge later" never risks double-spending the same funds elsewhere.
-
-**Refund is a reversal, never an edit.** Refunding creates a new offsetting `Transfer(type=REFUND)` pointing back at the original via `reference_id`; the original row is never touched. "How much has already been refunded" is computed on demand, not stored — one aggregate query per refund, which is fine since refunds aren't a hot path.
-
-**Peer-to-peer transfer reuses the same machinery, not a special case.** `credit`/`debit` always resolve `SYSTEM` as the implicit other side; `transfer` is the same locking/idempotency/outbox code path with both accounts supplied explicitly instead, rejecting `SYSTEM` on either side (that's what `credit`/`debit` are for) and self-transfers.
-
-**Trade-off accepted throughout**: 2+ inserts and an extra table per operation instead of a single `UPDATE` — the requirement here is auditability and correctness under concurrency, not maximum raw throughput. Full reasoning and rejected alternatives: [docs/04-design-decisions.md](docs/04-design-decisions.md).
+Full reasoning and rejected alternatives: [docs/04-design-decisions.md](docs/04-design-decisions.md).
 
 ## Testing approach
 
-Two tiers, run separately in CI (unit first, fails fast; integration only if unit passes):
-- **Unit** (`*Test.java`, Surefire, no DB): `JwtServiceTest`, `AuthServiceTest` — pure logic, collaborators mocked.
-- **Integration** (`*IT.java`, Failsafe, real Postgres): `AuthFlowIT` (register/login/bonus/auth), `LedgerIT` (credit/debit/hold/capture/void/refund/transfer/balance/history/idempotency/outbox/hold-expiry/the DB trigger backstop).
+Unit (fast, no DB) and integration (real Postgres, nothing stubbed or mocked) tiers, run separately in CI — unit fails fast before integration runs.
 
-**The concurrent debit case** ([`LedgerIT.onlyOneOfTwoConcurrentDebitsForTheFullBalanceSucceeds`](src/test/java/com/walletledger/domain/ledger/LedgerIT.java)) is the one most worth calling out: an account with balance 100 gets two debits of 100 fired at once from two threads. Without the row lock, both could read balance=100 and both succeed, double-spending the account into the negative. The test asserts exactly one request gets `201` and the other gets `409`, and the final balance is `0`, not negative — proving the lock, not just the application-level check, is what's actually enforcing correctness under a real race. A second concurrency test (`repeatedCreditWithSameIdempotencyKeyConcurrentlyAppliesOnce`) does the same for idempotency: 5 threads fire the identical request simultaneously, and exactly one transfer is ever created.
+**Correctness under normal use**
+- Every ledger operation (credit/debit/hold/capture/void/refund/transfer): happy path, insufficient-balance rejection, invalid input.
+- Full auth flow (register/login/bonus/token), paginated history, admin endpoint role-gating.
 
-Everything else follows the same real-Postgres-over-mocks philosophy: the insufficient-balance rejection, the paginated history, the hold-expiry scheduler, and the DB trigger are all exercised against an actual database, not stubbed.
+**Protected under pressure**
+- **Concurrent debit race** — two threads debit the same account's full balance at the same instant; exactly one succeeds, the other is rejected, balance never goes negative. Proves the row lock enforces it, not just the app-level check.
+- **Concurrent idempotency** — 5 threads fire the identical request simultaneously; exactly one transfer is ever created.
+- **Concurrent transfers** — 20 concurrent transfers between two accounts; the ledger is independently re-verified as still balanced afterward (entries sum to zero, no balance drift).
+- **Deliberate corruption** — an account balance is corrupted directly in the DB, bypassing the service layer entirely; reconciliation catches it, proving the safety net actually works rather than just existing. That same check runs hourly in the background (`ReconciliationScheduler`) and on demand (`GET /api/v1/admin/reconciliation`) — not just in the test.
+
+**Planned, not yet implemented**
+- **k6, doing double duty**: `check()`-based black-box smoke tests (real HTTP against a running instance, golden-path + expected-failure scenarios — e.g. register → login → transfer → over-transfer that should `409`) and load testing (throughput/latency under sustained concurrency)
+- Property-based testing (random operation sequences + invariant checks) instead of only hand-picked cases.
 
 ## Assumptions & limitations
 
 - **`root`/`123456`** and the seeded service API key (`dev-service-api-key-change-me`) are known dev-only credentials — must be rotated before any real deployment; no rotation tooling is provided.
 - **Single currency** (`COINS`) throughout — multi-currency would mean per-currency `SYSTEM` accounts and FX handling, neither designed here.
-- **No admin/audit-log HTTP surface** — every mutation *is* permanently recorded (that's the point of the ledger), but there's no `/admin/*` API to browse it; today that's direct DB/SQL access.
+- **Admin/audit-log HTTP surface is minimal** — `GET /api/v1/admin/reconciliation` is the only `/admin/*` endpoint so far; user management and audit-log browsing (every mutation *is* permanently recorded, just not queryable via HTTP yet) are still direct DB/SQL access.
 - **Outbox has no real consumer** — `OutboxEventScheduler` marks events `PROCESSED` as a stub extension point; wiring it to an actual message bus/notification service is future work.
 - **Refund isn't restricted to `PURCHASE`** by type — any `COMPLETED`, non-`REFUND` transfer can be reversed. This is intentionally general, but means a refund whose reversed direction lands on a `PLAYER` account (not the usual `SYSTEM`) is subject to the same insufficient-balance check a debit gets.
 - **Testcontainers can be unreliable on some local Docker Desktop setups** (seen during development on Windows) — CI is unaffected, and the `docker-compose.test.yml` / `IT_DB_URL` escape hatch above covers local dev when that happens.
@@ -241,6 +258,7 @@ Everything else follows the same real-Postgres-over-mocks philosophy: the insuff
 - [x] Signup bonus reward program
 - [x] Transaction refund, full and partial
 - [x] Direct player-to-player transfer (no `SYSTEM` account involved)
+- [x] Ledger reconciliation — scheduled + on-demand admin endpoint, catches balance drift the DB trigger can't see
 - [x] Dockerized app + Postgres (`docker-compose`), Flyway-managed schema
 - [x] Unit + integration test suites (Surefire/Failsafe, Testcontainers)
 - [x] CI/CD pipeline (GitHub Actions), two-tier and path-filtered
@@ -248,9 +266,10 @@ Everything else follows the same real-Postgres-over-mocks philosophy: the insuff
 - [x] Swagger / OpenAPI documentation
 
 ### Planned
-- [ ] Load testing with k6 — throughput/latency under realistic concurrency, not just correctness
+- [ ] k6 black-box smoke tests + load testing — functional `check()`-based scenarios against a running instance, and throughput/latency under realistic concurrency, in one tool
 - [ ] Redis caching layer for read-heavy endpoints (balance/history) to reduce DB load at scale
 - [ ] Kafka (or another broker) as the real outbox consumer, replacing the stub scheduler
+- [ ] WebSocket push for real-time balance/transaction updates — last-mile delivery for outbox events (`TRANSFER_COMPLETED`, etc.) to a connected player, instead of the client polling `/players/me/balance`
 - [ ] Admin/audit-log HTTP surface (`/admin/*` — user management, audit log browsing)
 - [ ] Multi-currency support (per-currency `SYSTEM` accounts, FX handling)
 - [ ] Observability: structured logging, metrics/tracing (e.g. Micrometer + Prometheus/Grafana)
@@ -260,4 +279,8 @@ Everything else follows the same real-Postgres-over-mocks philosophy: the insuff
 
 ## AI Tooling Notes
 
-This project's schema, API design, architecture decisions, and implementation were developed with heavy use of **Claude Code** (Anthropic) throughout — including reviewing early design choices for correctness, comparing against reference implementations, debugging a CI-only Testcontainers failure, and writing the Java source and tests. Design trade-offs and their reasoning are recorded as they were made in [docs/04-design-decisions.md](docs/04-design-decisions.md), not reconstructed after the fact.
+- **~50% of the time was spent talking with AI(Claude, ChatGPT, Gemini) before writing any code** — brainstorming and locking in tech-stack decisions, then writing the phase-by-phase plan and design rationale into `docs/`.
+- **Claude implemented each phase against that plan**; code was reviewed and manually tested after every phase before moving to the next.
+- **`.claude/` holds project-specific tooling**, committed alongside the code: a `verify` skill for the local test run, `/context-prime` and `/new-ledger-operation` commands, and 6 reviewer subagents scoped to this project's actual correctness/performance/security concerns rather than generic advice.
+- **Used Claude Code's remote-control mode** to keep implementation moving in the background while away from the keyboard.
+- **For sustained, longer-term development**, worth adopting a structured-workflow plugin such as [superpowers](https://github.com/obra/superpowers) — it formalizes the same brainstorm → plan → implement → review loop this project already followed by hand, via the Claude Code plugin marketplace.

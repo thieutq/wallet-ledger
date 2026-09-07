@@ -207,3 +207,22 @@ Closes a gap noticed post-launch: `TRANSFER` existed in `transfers_type_valid` a
 **Docs note**: since `TRANSFER` is now set only internally by this endpoint, it's no longer listed as a caller-supplied `type` for `credit`/`debit` in [01-api-list.md](01-api-list.md) — same treatment as `HOLD_CAPTURE`/`REFUND`.
 
 **Tests**: [05-test-plan.md §Phase 6](05-test-plan.md).
+
+---
+
+## Phase 7 — Reconciliation
+
+Two existing layers already guard the double-entry invariant: the app-level check (every operation writes balanced entries) and the Phase 2.5 DB trigger (re-verifies each transfer's entries sum to zero at `COMMIT`). Neither catches drift in `accounts.balance` itself — it's a separate, stored column ([04-design-decisions.md §6](04-design-decisions.md)), and the trigger only watches `entries`. A direct `UPDATE accounts SET balance = ...` (bad migration, manual incident fix) never touches `entries`, so it's invisible to everything built so far.
+
+**Migration**: none — pure read queries over existing tables.
+
+**`EntryRepository`** gains two queries:
+- `sumAllEntries()` — `SUM(amount)` over the whole `entries` table; must always be `0` system-wide (every transfer's two entries individually sum to zero).
+- `findDriftedAccounts()` — native join+`HAVING` query, returns every account where `accounts.balance <> SUM(entries.amount) WHERE account_id = that account`.
+
+**`domain/reconciliation/`** (new package):
+- `ReconciliationService.run()` — read-only, calls both queries, returns a `ReconciliationReport` (`globalEntriesSum`, `driftedAccounts`, `isHealthy()`).
+- `ReconciliationScheduler` — `@Scheduled`, hourly (`app.reconciliation.interval-ms`, configurable) — a full-table scan, so a much longer interval than the outbox/hold-expiry pollers' 5s. Logs `INFO` when healthy, `ERROR` with the full report when not; no real alerting wired up yet (same stub-extension-point treatment as the outbox consumer).
+- `ReconciliationController` — `GET /api/v1/admin/reconciliation`, `ROLE_ADMIN`, runs the same check on demand. First endpoint under `/api/v1/admin/*` and first use of `ROLE_ADMIN` anywhere in the app (the role already existed in the JWT claim, just never gated on).
+
+**Tests**: [05-test-plan.md §Phase 7](05-test-plan.md) — includes a test that deliberately corrupts `accounts.balance` via raw JDBC (bypassing `LedgerService`, never touching `entries`) to prove reconciliation catches exactly what the Phase 2.5 trigger structurally cannot.
