@@ -259,7 +259,7 @@ class LedgerIT extends AbstractIntegrationTest {
                 .filter(t -> t.getIdempotencyKey().equals(idempotencyKey)).count()).isEqualTo(1);
     }
 
-    // ---- P2-I15/I16: concurrent debit race (named explicitly by the brief) --
+    // ---- P2-I15/I16: concurrent debit race --------------------------------
 
     @Test
     void onlyOneOfTwoConcurrentDebitsForTheFullBalanceSucceeds() throws Exception {
@@ -462,6 +462,71 @@ class LedgerIT extends AbstractIntegrationTest {
         assertThat(refundCount).isEqualTo(1);
     }
 
+    // ---- peer-to-peer transfer between two player wallets -----------------
+
+    @Test
+    void transferMovesFundsDirectlyBetweenTwoPlayerAccounts() throws Exception {
+        Account alice = newPlayerAccount(100);
+        Account bob = newPlayerAccount(0);
+
+        postLedger("/api/v1/ledger/transfer", transferBody(alice.getId(), bob.getId(), 40), UUID.randomUUID().toString())
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.type").value("TRANSFER"))
+                .andExpect(jsonPath("$.data.amount").value(40));
+
+        assertThat(accountRepository.findById(alice.getId()).orElseThrow().getBalance()).isEqualTo(60);
+        assertThat(accountRepository.findById(bob.getId()).orElseThrow().getBalance()).isEqualTo(40);
+    }
+
+    @Test
+    void transferAboveAvailableBalanceReturns409AndLeavesBalancesUnchanged() throws Exception {
+        Account alice = newPlayerAccount(30);
+        Account bob = newPlayerAccount(0);
+
+        postLedger("/api/v1/ledger/transfer", transferBody(alice.getId(), bob.getId(), 40), UUID.randomUUID().toString())
+                .andExpect(status().isConflict());
+
+        assertThat(accountRepository.findById(alice.getId()).orElseThrow().getBalance()).isEqualTo(30);
+        assertThat(accountRepository.findById(bob.getId()).orElseThrow().getBalance()).isEqualTo(0);
+    }
+
+    @Test
+    void transferToTheSameAccountReturns400() throws Exception {
+        Account alice = newPlayerAccount(100);
+
+        postLedger("/api/v1/ledger/transfer", transferBody(alice.getId(), alice.getId(), 10), UUID.randomUUID().toString())
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void transferInvolvingTheSystemAccountReturns400() throws Exception {
+        Account alice = newPlayerAccount(100);
+
+        postLedger("/api/v1/ledger/transfer", transferBody(alice.getId(), systemAccountId(), 10), UUID.randomUUID().toString())
+                .andExpect(status().isBadRequest());
+        postLedger("/api/v1/ledger/transfer", transferBody(systemAccountId(), alice.getId(), 10), UUID.randomUUID().toString())
+                .andExpect(status().isBadRequest());
+
+        assertThat(accountRepository.findById(alice.getId()).orElseThrow().getBalance()).isEqualTo(100);
+    }
+
+    @Test
+    void repeatedTransferRequestWithSameIdempotencyKeyAppliesOnce() throws Exception {
+        Account alice = newPlayerAccount(100);
+        Account bob = newPlayerAccount(0);
+        String idempotencyKey = UUID.randomUUID().toString();
+
+        postLedger("/api/v1/ledger/transfer", transferBody(alice.getId(), bob.getId(), 40), idempotencyKey)
+                .andExpect(status().isCreated());
+        postLedger("/api/v1/ledger/transfer", transferBody(alice.getId(), bob.getId(), 40), idempotencyKey)
+                .andExpect(status().isCreated());
+
+        assertThat(accountRepository.findById(alice.getId()).orElseThrow().getBalance()).isEqualTo(60);
+        assertThat(accountRepository.findById(bob.getId()).orElseThrow().getBalance()).isEqualTo(40);
+        assertThat(transferRepository.findAll().stream()
+                .filter(t -> idempotencyKey.equals(t.getIdempotencyKey())).count()).isEqualTo(1);
+    }
+
     // ---- helpers ---------------------------------------------------------
 
     private String systemAccountId() {
@@ -492,6 +557,10 @@ class LedgerIT extends AbstractIntegrationTest {
 
     private Map<String, Object> holdBody(String accountId, long amount) {
         return Map.of("account_id", accountId, "amount", amount, "type", "PURCHASE");
+    }
+
+    private Map<String, Object> transferBody(String fromAccountId, String toAccountId, long amount) {
+        return Map.of("from_account_id", fromAccountId, "to_account_id", toAccountId, "amount", amount);
     }
 
     private Map<String, Object> refundBody(String originalTransferId, Long amount) {

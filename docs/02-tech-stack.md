@@ -37,7 +37,7 @@ com.walletledger
 │   ├── account/                     # Account entity, AccountRepository (row locking)
 │   ├── ledger/                      # Transfer/Entry/Hold, LedgerService/Controller, dto/, mapper/
 │   ├── player/                      # PlayerController (balance, transactions)
-│   ├── rewardprogram/                # RewardProgram lookup table
+│   ├── reward/                      # RewardProgram lookup table
 │   └── outbox/                      # OutboxEvent, publisher, @Scheduled poller
 ├── infrastructure/security/
 │   ├── jwt/                         # JwtService, JwtAuthenticationFilter, JwtProperties

@@ -6,6 +6,7 @@ import com.walletledger.domain.ledger.dto.HoldIdRequest;
 import com.walletledger.domain.ledger.dto.HoldRequest;
 import com.walletledger.domain.ledger.dto.HoldResponse;
 import com.walletledger.domain.ledger.dto.RefundRequest;
+import com.walletledger.domain.ledger.dto.TransferRequest;
 import com.walletledger.domain.ledger.dto.TransferResponse;
 import com.walletledger.domain.ledger.mapper.LedgerMapper;
 import com.walletledger.shared.response.ApiResponse;
@@ -88,6 +89,17 @@ public class LedgerController {
             @Valid @RequestBody RefundRequest request) {
         Transfer transfer = ledgerService.refund(new RefundCommand(
                 request.originalTransferId(), request.amount(), request.metadata(), idempotencyKey));
+        return created(transfer);
+    }
+
+    @Operation(summary = "Transfer funds directly between two player wallets")
+    @PostMapping("/transfer")
+    public ResponseEntity<ApiResponse<TransferResponse>> transfer(
+            @RequestHeader(IDEMPOTENCY_KEY_HEADER) @NotBlank String idempotencyKey,
+            @Valid @RequestBody TransferRequest request) {
+        Transfer transfer = ledgerService.transfer(new AccountTransferCommand(
+                request.fromAccountId(), request.toAccountId(), request.amount(), request.currency(),
+                request.referenceId(), request.metadata(), idempotencyKey));
         return created(transfer);
     }
 

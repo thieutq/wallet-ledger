@@ -8,7 +8,7 @@ This folder is deep-dive reference material for the Wallet Ledger design. The ro
 2. **[02-tech-stack.md](02-tech-stack.md)** — the concrete tools (Spring Boot, JPA, Flyway, MapStruct, ...) and the package-by-domain folder layout, with a short rationale for each pick.
 3. **[01-api-list.md](01-api-list.md)** — the actual HTTP surface: every endpoint, its auth requirement, and request/response shape. Reference material — look things up here rather than read top to bottom.
 4. **[03-implementation-plan.md](03-implementation-plan.md)** — the delivery roadmap: 7 phases, in the order they're meant to be built, each with its migration, entities, endpoints, and tests. Most useful for understanding *when* something lands and *why in that order*; it forward-references `04-design-decisions.md` extensively for the reasoning behind each phase's choices.
-5. **[05-test-plan.md](05-test-plan.md)** — the detailed test-case checklist per phase (Given/When/Then, unit vs. integration, traced back to the take-home's mandatory/bonus requirements). Read right alongside `03-implementation-plan.md` — it's the granular expansion of that document's short "Tests" bullets, not a standalone narrative.
+5. **[05-test-plan.md](05-test-plan.md)** — the detailed test-case checklist per phase (Given/When/Then, unit vs. integration, traced back to the requirement legend). Read right alongside `03-implementation-plan.md` — it's the granular expansion of that document's short "Tests" bullets, not a standalone narrative.
 
 ## Why this order, not the filename order
 

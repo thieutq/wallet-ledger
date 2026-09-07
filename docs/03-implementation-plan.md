@@ -76,7 +76,7 @@ CREATE INDEX outbox_events_pending_idx ON outbox_events(created_at) WHERE status
 
 **Seed**: `SystemAccountSeeder` — `SYSTEM`/`COINS` treasury account, required before any `credit` succeeds.
 
-**Tests**: [05-test-plan.md §Phase 2](05-test-plan.md) — includes the concurrent-debit and repeated-idempotency-key cases the take-home brief names explicitly.
+**Tests**: [05-test-plan.md §Phase 2](05-test-plan.md) — includes the concurrent-debit and repeated-idempotency-key cases as explicit correctness requirements, not incidental coverage.
 
 ---
 
@@ -157,7 +157,7 @@ Reuses Phase 2's `credit` — no new ledger logic.
 
 ## Phase 4 — Transaction Refund
 
-Closes the gap flagged in [04-design-decisions.md §5](04-design-decisions.md) — formalizes `REFUND`. Also a take-home bonus feature.
+Closes the gap flagged in [04-design-decisions.md §5](04-design-decisions.md) — formalizes `REFUND`, a standard support/ops capability for any payments system.
 
 **Migration**: none — `REFUND` type and `reference_id` already exist; pure application logic, consistent with append-only (no new column, no `UPDATE` of the original `Transfer`).
 
@@ -178,9 +178,32 @@ Closes the gap flagged in [04-design-decisions.md §5](04-design-decisions.md) �
 
 ---
 
-## Phase 5 — Final README pass & submission readiness
+## Phase 5 — Final README pass & release readiness
 
 README has existed since Phase 1.5 — this is the final consolidation pass, not a rewrite.
 
 - Fill in **Concurrency & Idempotency** (real content, replacing the Phase 1.5 placeholder); finalize **Testing approach** (call out the concurrent-debit/idempotency-key cases) and **Assumptions & limitations**.
-- **Submission**: push to GitHub (public, or private with reviewer access); fresh-clone sanity check (`docker-compose up -d` → `./mvnw test && ./mvnw failsafe:integration-test failsafe:verify` → manual smoke test of each mandatory endpoint).
+- **Release checklist**: push to GitHub; fresh-clone sanity check (`docker-compose up -d` → `./mvnw test && ./mvnw failsafe:integration-test failsafe:verify` → manual smoke test of each endpoint).
+
+---
+
+## Phase 6 — Peer-to-peer Transfer
+
+Closes a gap noticed post-launch: `TRANSFER` existed in `transfers_type_valid` and the `TransferType` enum from Phase 2 onward, but no code path ever created one — `credit`/`debit` always resolve the `SYSTEM` account as the implicit other side, so there was no way to move funds directly between two players' wallets.
+
+**Migration**: none — `TRANSFER` already exists in the enum/CHECK constraint.
+
+`LedgerService.transfer(fromAccountId, toAccountId, amount, idempotencyKey)`:
+1. Idempotency check (same pattern as `credit`/`debit`/`refund`).
+2. Reject (`400`) if `fromAccountId == toAccountId`.
+3. Lock both accounts (`id`-sorted, same as #4 in design-decisions).
+4. Reject (`400`) if either account is `SYSTEM` — that's what `credit`/`debit` are for.
+5. Reject (`409`) if the sender's available balance (`balance - held`) is less than the amount.
+6. Insert `Transfer(type=TRANSFER)` + 2 offsetting `Entry` rows; update both balances.
+7. Publish outbox event (`TRANSFER_COMPLETED`, same event type `credit`/`debit` already use).
+
+**Endpoint**: `POST /api/v1/ledger/transfer` — `ROLE_SERVICE`, `Idempotency-Key`. Body: `from_account_id`, `to_account_id`, `amount`, `currency` (optional), `reference_id` (optional), `metadata` (optional).
+
+**Docs note**: since `TRANSFER` is now set only internally by this endpoint, it's no longer listed as a caller-supplied `type` for `credit`/`debit` in [01-api-list.md](01-api-list.md) — same treatment as `HOLD_CAPTURE`/`REFUND`.
+
+**Tests**: [05-test-plan.md §Phase 6](05-test-plan.md).

@@ -1,20 +1,21 @@
 # Test Plan / Checklist
 
-Granular, per-phase test cases (IDs, Given/When/Then, traced back to the take-home brief). [03-implementation-plan.md](03-implementation-plan.md) links here instead of repeating this list.
+Granular, per-phase test cases (IDs, Given/When/Then, traced back to the requirement legend below). [03-implementation-plan.md](03-implementation-plan.md) links here instead of repeating this list.
 
 ## Requirement legend
 
-| Code | Take-home requirement |
+| Code | Requirement |
 |---|---|
-| MC1–MC6 | Mandatory wallet operations: credit, debit, reject-insufficient-debit, return balance, paginated history, permanent record — §3.1 |
-| SC1 | Same request not applied twice (idempotency) — §3.2 |
-| SC2 | Concurrent requests don't corrupt state — §3.2 |
-| SC3 | A failed operation leaves no partial update — §3.2 |
-| SC4 | Invalid input handled clearly — §3.2 |
-| BF-Reservation | Bonus: Reservation of Funds — §4.1 |
-| BF-Refund | Bonus: Transaction Refund — §4.1 |
-| BF-DomainEvents | Bonus: Domain Events — §4.2 |
-| Infra | Supports the above but isn't itself a graded capability (auth plumbing, seeding, tooling) |
+| MC1–MC6 | Mandatory wallet operations: credit, debit, reject-insufficient-debit, return balance, paginated history, permanent record |
+| SC1 | Same request not applied twice (idempotency) |
+| SC2 | Concurrent requests don't corrupt state |
+| SC3 | A failed operation leaves no partial update |
+| SC4 | Invalid input handled clearly |
+| BF-Reservation | Reservation of Funds (two-phase hold/capture/void) |
+| BF-Refund | Transaction Refund |
+| BF-DomainEvents | Domain Events (transactional outbox) |
+| BF-Transfer | Peer-to-peer Transfer (direct player-to-player movement) |
+| Infra | Supports the above but isn't itself a customer-facing capability (auth plumbing, seeding, tooling) |
 
 Test type: **Unit** = `*Test.java`, Surefire, no Spring context/DB, Mockito. **Integration** = `*IT.java`, Failsafe, full Spring context + Testcontainers Postgres.
 
@@ -87,7 +88,7 @@ Not business-logic test cases — a one-time verification checklist:
 | P2-I13 | — | `POST /ledger/credit` fired **concurrently** from 5 threads, same `Idempotency-Key` | exactly 1 `Transfer` row; all 5 responses carry the same transfer id | SC1, SC2 |
 | P2-I14 | — | same `Idempotency-Key` reused between a credit call and a debit call | second call rejected or returns the first result — no ambiguous double-processing | SC1 |
 
-### Concurrency (Integration — the take-home's named "concurrent debit case")
+### Concurrency (Integration — the named concurrent debit case)
 
 | ID | Given | When | Then | Req |
 |---|---|---|---|---|
@@ -137,6 +138,18 @@ Not business-logic test cases — a one-time verification checklist:
 
 ---
 
-## Phase 5 — Final README pass & submission
+## Phase 5 — Final README pass & release
 
-Not test cases — see the **Submission checklist** already in [03-implementation-plan.md — Phase 5](03-implementation-plan.md).
+Not test cases — see the **Release checklist** already in [03-implementation-plan.md — Phase 5](03-implementation-plan.md).
+
+---
+
+## Phase 6 — Peer-to-peer Transfer
+
+| ID | Given | When | Then | Req |
+|---|---|---|---|---|
+| P6-I1 | account A balance=100, account B balance=0 | `POST /ledger/transfer` A→B, amount=40 | `201`; A=60, B=40; 1 `Transfer(type=TRANSFER)` + 2 `Entry` created | BF-Transfer |
+| P6-I2 | account A balance=30 | `POST /ledger/transfer` A→B, amount=40 | `409`, both balances unchanged | BF-Transfer, MC3-equivalent |
+| P6-I3 | account A | `POST /ledger/transfer` A→A (same account) | `400`, no state change | SC4 |
+| P6-I4 | account A, the `SYSTEM` account | `POST /ledger/transfer` involving the `SYSTEM` account on either side | `400`, no state change | SC4 |
+| P6-I5 | — | the same transfer request fired twice with the same `Idempotency-Key` | single transfer applied, not double-moved | SC1 |

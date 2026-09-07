@@ -17,7 +17,7 @@ Both endpoints require a body of:
 - `account_id` — target player wallet
 - `amount`
 - `currency` (optional) — defaults to `COINS`, the only currency currently supported
-- `type` — `BONUS` | `PURCHASE` | `ADMIN_ADJUSTMENT` | `TRANSFER` (matches `transfers_type_valid`, minus `HOLD_CAPTURE`/`REFUND` — those are only ever set internally by `capture`/`refund`, never caller-supplied, so refunds can't bypass their own validation)
+- `type` — `BONUS` | `PURCHASE` | `ADMIN_ADJUSTMENT` (matches `transfers_type_valid`, minus `HOLD_CAPTURE`/`REFUND`/`TRANSFER` — those are only ever set internally by `capture`/`refund`/`transfer`, never caller-supplied here)
 - `reference_id` (optional) — id of the external entity this is linked to (mission id, order id, admin ticket id...)
 - `metadata` (optional) — freeform note, e.g. admin justification
 
@@ -35,6 +35,10 @@ Both endpoints require a body of:
 ## Ledger — Refund (system/admin-facing, requires `Idempotency-Key`)
 
 - `POST /api/v1/ledger/refund` — reverses a previous `COMPLETED` transfer. Body: `original_transfer_id`, `amount` (optional, defaults to full remaining), `metadata` (optional). `404` if not found; `409` if already `REFUND`, not `COMPLETED`, or `amount` exceeds what's still refundable (computed on demand, not stored). Creates a `Transfer(type=REFUND, reference_id=original_transfer_id)` moving funds back — see [Phase 4](03-implementation-plan.md).
+
+## Ledger — Peer-to-peer Transfer (system/admin-facing, requires `Idempotency-Key`)
+
+- `POST /api/v1/ledger/transfer` — moves funds directly between two `PLAYER` wallets, no `SYSTEM` account involved. Body: `from_account_id`, `to_account_id`, `amount`, `currency` (optional), `reference_id` (optional), `metadata` (optional). `400` if `from_account_id == to_account_id` or either account is `SYSTEM` (use `credit`/`debit` for that); `409` if the sender's available balance is insufficient. Creates a `Transfer(type=TRANSFER)` + 2 `Entry` rows, same locking/idempotency/outbox machinery as every other ledger operation.
 
 ## Admin / Auditor (user management, audit)
 

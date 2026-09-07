@@ -81,6 +81,11 @@ public class LedgerService {
                 .orElseGet(() -> runIdempotent(cmd.idempotencyKey(), () -> doRefund(cmd)));
     }
 
+    public Transfer transfer(AccountTransferCommand cmd) {
+        return transferRepository.findByIdempotencyKey(cmd.idempotencyKey())
+                .orElseGet(() -> runIdempotent(cmd.idempotencyKey(), () -> doTransfer(cmd)));
+    }
+
     // ---- credit / debit ------------------------------------------------
 
     private Transfer doCredit(TransferCommand cmd) {
@@ -324,6 +329,53 @@ public class LedgerService {
         return refund;
     }
 
+    // ---- peer-to-peer transfer --------------------------------------------
+
+    private Transfer doTransfer(AccountTransferCommand cmd) {
+        if (cmd.fromAccountId().equals(cmd.toAccountId())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot transfer an account to itself");
+        }
+
+        String currency = resolveCurrency(cmd.currency());
+        Map<String, Account> accounts = lockAccounts(cmd.fromAccountId(), cmd.toAccountId());
+        Account from = accounts.get(cmd.fromAccountId());
+        Account to = accounts.get(cmd.toAccountId());
+
+        rejectSystemAccount(from);
+        rejectSystemAccount(to);
+
+        if (from.available() < cmd.amount()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Insufficient balance");
+        }
+
+        from.setBalance(from.getBalance() - cmd.amount());
+        to.setBalance(to.getBalance() + cmd.amount());
+
+        Transfer transfer = Transfer.builder()
+                .idempotencyKey(cmd.idempotencyKey())
+                .fromAccountId(from.getId())
+                .toAccountId(to.getId())
+                .amount(cmd.amount())
+                .currency(currency)
+                .status(TransferStatus.COMPLETED)
+                .type(TransferType.TRANSFER)
+                .referenceId(cmd.referenceId())
+                .metadata(cmd.metadata())
+                .build();
+
+        persistTransfer(transfer, from, to, cmd.amount());
+
+        outboxEventPublisher.publish("TRANSFER_COMPLETED", Map.of(
+                "transferId", transfer.getId(),
+                "fromAccountId", from.getId(),
+                "toAccountId", to.getId(),
+                "amount", cmd.amount(),
+                "type", TransferType.TRANSFER.name()
+        ));
+
+        return transfer;
+    }
+
     // ---- shared helpers --------------------------------------------------
 
     private Transfer runIdempotent(String idempotencyKey, java.util.function.Supplier<Transfer> action) {
@@ -358,6 +410,13 @@ public class LedgerService {
     private void rejectSystemAccountAsTarget(String accountId, Account systemAccount) {
         if (accountId.equals(systemAccount.getId())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot target the system account directly");
+        }
+    }
+
+    private void rejectSystemAccount(Account account) {
+        if (account.getType() == AccountType.SYSTEM) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Cannot transfer directly to/from the system account — use credit/debit instead");
         }
     }
 
